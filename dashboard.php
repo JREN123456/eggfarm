@@ -6,42 +6,63 @@ if (session_status() === PHP_SESSION_NONE) {
     session_start();
 }
 
-// Simulated or session-based user name for consistency
-$customer_name = $_SESSION['customer_name'] ?? 'Guest';
+// Security Enforcement: Kick back to logging panel if user identifier isn't tracked
+if (!isset($_SESSION['user_id'])) {
+    header("Location: login.php");
+    exit();
+}
 
-// --- DATABASE METRICS AGGREGATION ---
-// 1. Fetch Total Reservations
+// Fetch session parameters synchronized within login_process.php
+$user_id = $_SESSION['user_id'];
+$customer_name = $_SESSION['fullname'] ?? 'Guest';
+$user_role = $_SESSION['role'] ?? 'Customer';
+
+// --- DATABASE METRICS AGGREGATION (ACCOUNT SEPARATE PROGRESS) ---
+
+// 1. Fetch Total Reservations specific to this client account
 $total_reservations = 0;
-$res_count_query = $conn->query("SELECT COUNT(*) as total FROM reservations");
-if ($res_count_query) {
+$res_stmt = $conn->prepare("SELECT COUNT(*) as total FROM reservations WHERE user_id = ?");
+$res_stmt->bind_param("i", $user_id);
+if ($res_stmt->execute()) {
+    $res_count_query = $res_stmt->get_result();
     $row = $res_count_query->fetch_assoc();
     $total_reservations = $row['total'] ?? 0;
 }
+$res_stmt->close();
 
-// 2. Fetch Total Trays Reserved
+// 2. Fetch Total Trays Reserved specific to this client account
 $total_trays = 0;
-$trays_query = $conn->query("SELECT SUM(quantity) as total_qty FROM reservations");
-if ($trays_query) {
+$trays_stmt = $conn->prepare("SELECT SUM(quantity) as total_qty FROM reservations WHERE user_id = ?");
+$trays_stmt->bind_param("i", $user_id);
+if ($trays_stmt->execute()) {
+    $trays_query = $trays_stmt->get_result();
     $row = $trays_query->fetch_assoc();
-    $total_trays = $row['total_qty'] ?? 0;
+    $total_trays = (int)($row['total_qty'] ?? 0);
 }
+$trays_stmt->close();
 
-// 3. Fetch Total Spent / Revenue Accumulated
+// 3. Fetch Total Spent / Revenue Accumulated specific to this client account
 $total_spent = 0;
-$revenue_query = $conn->query("SELECT SUM(total_price) as total_rev FROM reservations");
-if ($revenue_query) {
+$revenue_stmt = $conn->prepare("SELECT SUM(total_price) as total_rev FROM reservations WHERE user_id = ?");
+$revenue_stmt->bind_param("i", $user_id);
+if ($revenue_stmt->execute()) {
+    $revenue_query = $revenue_stmt->get_result();
     $row = $revenue_query->fetch_assoc();
-    $total_spent = $row['total_rev'] ?? 0;
+    $total_spent = (float)($row['total_rev'] ?? 0);
 }
+$revenue_stmt->close();
 
-// 4. Fetch Recent Activity Logs (Limit to last 5 transactions)
+// 4. Fetch Recent Activity Logs specific to this client account (Limit to last 5 transactions)
 $recent_activities = [];
-$activity_query = $conn->query("SELECT id, egg_type, quantity, total_price, reservation_date, delivery_method FROM reservations ORDER BY id DESC LIMIT 5");
-if ($activity_query) {
+$activity_stmt = $conn->prepare("SELECT id, egg_type, quantity, total_price, reservation_date, delivery_method FROM reservations WHERE user_id = ? ORDER BY id DESC LIMIT 5");
+$activity_stmt->bind_param("i", $user_id);
+if ($activity_stmt->execute()) {
+    $activity_query = $activity_stmt->get_result();
     while ($row = $activity_query->fetch_assoc()) {
         $recent_activities[] = $row;
     }
 }
+$activity_stmt->close();
 ?>
 
 <!DOCTYPE html>
@@ -57,14 +78,18 @@ if ($activity_query) {
 
     <div class="flex min-h-screen">
         
+        <!-- Left Navigation Bar -->
         <aside class="w-64 bg-sky-500 text-white flex flex-col flex-shrink-0 shadow-xl">
             <div class="p-6 flex flex-col items-center justify-center border-b border-sky-400/40">
-                <img src="vdvc.png" alt="Logo" class="w-50 h-50">
+                <img src="vdvc.png" alt="Logo" class="w-50 h-50 object-contain mb-2">
                 <span class="font-bold text-lg tracking-wide uppercase">VDVC Egg Farm</span>
+                <span class="mt-1 text-[10px] bg-sky-600 px-2 py-0.5 rounded-full font-semibold uppercase tracking-wider text-sky-100">
+                    <?= htmlspecialchars($user_role) ?> Panel
+                </span>
             </div>
             
             <nav class="flex-1 p-4 space-y-2 mt-4">
-                <a href="dashboard.php" class="flex items-center space-x-3 px-4 py-3 rounded-xl bg-sky-600 font-semibold shadow-inner transition">
+                <a href="dashboard.php" class="flex items-center space-x-3 px-4 py-3 rounded-xl bg-sky-600/40 transition font-medium">
                     <i class="fa-solid fa-chart-pie w-5"></i>
                     <span>Dashboard</span>
                 </a>
@@ -79,6 +104,12 @@ if ($activity_query) {
                 <a href="profile.php" class="flex items-center space-x-3 px-4 py-3 rounded-xl hover:bg-sky-600/50 transition font-medium">
                     <i class="fa-solid fa-user w-5"></i>
                     <span>My Profile</span>
+                </a>
+                
+                <hr class="border-sky-400/30 my-2">
+                <a href="logout.php" class="flex items-center space-x-3 px-4 py-3 rounded-xl hover:bg-red-600/80 transition font-medium text-sky-100 hover:text-white">
+                    <i class="fa-solid fa-right-from-bracket w-5"></i>
+                    <span>Logout</span>
                 </a>
             </nav>
             
@@ -97,7 +128,7 @@ if ($activity_query) {
                         <div class="text-xs text-gray-400">(Customer Access)</div>
                     </div>
                     <div class="w-10 h-10 rounded-full bg-purple-200 overflow-hidden border border-gray-300">
-                        <img src="https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&q=80&w=150" alt="Profile">
+                        <img src="https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&q=80&w=150" alt="Profile" class="w-full h-full object-cover">
                     </div>
                 </div>
             </header>
@@ -175,7 +206,7 @@ if ($activity_query) {
                                                     <div class="flex items-center space-x-2">
                                                         <span class="w-2 h-2 rounded-full bg-blue-500"></span>
                                                         <span><?php echo htmlspecialchars($activity['egg_type']); ?></span>
-                                                        <span class="text-xs text-gray-400">(x<?php echo $activity['quantity']; ?>)</span>
+                                                        <span class="text-xs text-gray-400">(x<?php echo (int)$activity['quantity']; ?>)</span>
                                                     </div>
                                                 </td>
                                                 <td class="py-3.5 px-4 text-xs"><?php echo htmlspecialchars($activity['reservation_date']); ?></td>
@@ -184,7 +215,7 @@ if ($activity_query) {
                                                         <?php echo htmlspecialchars($activity['delivery_method']); ?>
                                                     </span>
                                                 </td>
-                                                <td class="py-3.5 px-4 text-right font-bold text-slate-800">₱<?php echo number_format($activity['total_price']); ?></td>
+                                                <td class="py-3.5 px-4 text-right font-bold text-slate-800">₱<?php echo number_format((float)$activity['total_price'], 2); ?></td>
                                             </tr>
                                         <?php endforeach; ?>
                                     <?php else: ?>

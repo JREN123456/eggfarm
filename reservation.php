@@ -6,16 +6,42 @@ if (session_status() === PHP_SESSION_NONE) {
     session_start();
 }
 
-// Check if we just redirected from a successful submission
+// Security Enforcement: Kick back to logging panel if user identifier isn't tracked
+if (!isset($_SESSION['user_id'])) {
+    header("Location: login.php");
+    exit();
+}
+
+// Match the active logged-in parameters
+$user_id = $_SESSION['user_id'];
+$customer_name = $_SESSION['fullname'] ?? '';
+$user_role = $_SESSION['role'] ?? 'Customer';
+
+// Helper function to insert notifications easily into the database
+function add_notification($conn, $user_id, $title, $description, $type = 'info') {
+    $stmt = $conn->prepare("INSERT INTO notifications (user_id, title, description, type) VALUES (?, ?, ?, ?)");
+    $stmt->bind_param("isss", $user_id, $title, $description, $type);
+    $stmt->execute();
+    $stmt->close();
+}
+
+// AJAX API Endpoint Processing: Handle background cancellation logs seamlessly without breaking layout
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_GET['action']) && $_GET['action'] === 'log_cancellation') {
+    header('Content-Type: application/json');
+    add_notification($conn, $user_id, "Draft process cancelled", "Timeline reset to Draft status", "alert");
+    echo json_encode(['status' => 'success']);
+    exit();
+}
+
+// Check if we just redirected from a successful submission (for structural template behaviors)
 $message = $_SESSION['success_message'] ?? '';
 $is_submitted = $_SESSION['is_submitted'] ?? false;
 
-// Clear session variables immediately so a normal refresh wipes everything back to zero
+// Clear session variables immediately so a normal refresh wipes layout updates back to zero
 unset($_SESSION['success_message']);
 unset($_SESSION['is_submitted']);
 
 // Initialize variables as completely empty on page load/refresh
-$customer_name = '';
 $contact_number = '';
 $delivery_address = '';
 $egg_type = '';
@@ -25,50 +51,53 @@ $reservation_date = '';
 
 // Handle form submission and redirect
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_reservation'])) {
-    // Process your data here if saving to a database
     // Get form data safely
-$customer_name = $_POST['customer_name'];
-$contact_number = $_POST['contact_number'];
-$delivery_address = $_POST['delivery_address'];
-$egg_type = $_POST['egg_type'];
-$quantity = $_POST['quantity'];
-$delivery_method = $_POST['delivery_method'];
-$reservation_date = $_POST['reservation_date'];
+    $customer_name = $_POST['customer_name'];
+    $contact_number = $_POST['contact_number'];
+    $delivery_address = $_POST['delivery_address'];
+    $egg_type = $_POST['egg_type'];
+    $quantity = $_POST['quantity'];
+    $delivery_method = $_POST['delivery_method'];
+    $reservation_date = $_POST['reservation_date'];
 
-// Pricing logic
-$prices = [
-    'Extra Small' => 140,
-    'Small' => 150,
-    'Medium' => 175,
-    'Large' => 195,
-    'Extra Large' => 235,
-    'Jumbo' => 255,
-    'Super' => 270,
-    'Double Yolk' => 320
-];
+    // Pricing logic
+    $prices = [
+        'Extra Small' => 140,
+        'Small' => 150,
+        'Medium' => 175,
+        'Large' => 195,
+        'Extra Large' => 235,
+        'Jumbo' => 255,
+        'Super Jumbo' => 270,
+        'Double Yolk' => 320
+    ];
 
-$price_per_egg = $prices[$egg_type] ?? 0;
-$total_price = $quantity * $price_per_egg;
+    $price_per_egg = $prices[$egg_type] ?? 0;
+    $total_price = $quantity * $price_per_egg;
 
-// Insert into database
-$stmt = $conn->prepare("INSERT INTO reservations 
-(customer_name, contact_number, delivery_address, egg_type, quantity, delivery_method, reservation_date, total_price) 
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+    // Insert into database mapping individual user_id tracking records
+    $stmt = $conn->prepare("INSERT INTO reservations 
+    (user_id, customer_name, contact_number, delivery_address, egg_type, quantity, delivery_method, reservation_date, total_price) 
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
 
-$stmt->bind_param(
-    "ssssissd",
-    $customer_name,
-    $contact_number,
-    $delivery_address,
-    $egg_type,
-    $quantity,
-    $delivery_method,
-    $reservation_date,
-    $total_price
-);
+    $stmt->bind_param(
+        "issssissd",
+        $user_id,
+        $customer_name,
+        $contact_number,
+        $delivery_address,
+        $egg_type,
+        $quantity,
+        $delivery_method,
+        $reservation_date,
+        $total_price
+    );
 
-$stmt->execute();
-$stmt->close();
+    if ($stmt->execute()) {
+        // Log notification entry securely into persistence table 
+        add_notification($conn, $user_id, "Order submitted successfully!", "Your order for {$quantity} tray(s) of {$egg_type} eggs is processing.", "success");
+    }
+    $stmt->close();
 
     // Store states in session for the immediate next render
     $_SESSION['success_message'] = "Reservation submitted successfully!";
@@ -79,6 +108,23 @@ $stmt->close();
     exit();
 }
 
+// Fetch all persistent historical user notifications to render inside dropdown
+$notifications = [];
+$notif_stmt = $conn->prepare("SELECT id, title, description, type, is_read, created_at FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 15");
+$notif_stmt->bind_param("i", $user_id);
+$notif_stmt->execute();
+$result = $notif_stmt->get_result();
+while ($row = $result->fetch_assoc()) {
+    $notifications[] = $row;
+}
+$notif_stmt->close();
+
+// Calculate total unread counter badge digits dynamically
+$unread_count = 0;
+foreach ($notifications as $n) {
+    if (!$n['is_read']) $unread_count++;
+}
+
 $prices = [
     'Extra Small' => 140,
     'Small' => 150,
@@ -86,7 +132,7 @@ $prices = [
     'Large' => 195,
     'Extra Large' => 235,
     'Jumbo' => 255,
-    'Super' => 270,
+    'Super Jumbo' => 270,
     'Double Yolk' => 320
 ];
 
@@ -94,7 +140,6 @@ $price_per_egg = $prices[$egg_type] ?? 0;
 $total_price = $quantity * $price_per_egg;
 $today = date('Y-m-d');
 ?>
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -109,24 +154,23 @@ $today = date('Y-m-d');
 </head>
 <body class="bg-slate-100 font-sans text-gray-700 antialiased min-h-screen">
 
-    <!-- Parent Wrapper for Sidebar layout -->
     <div class="flex min-h-screen">
         
-        <!-- Left Navigation Bar -->
         <aside class="w-64 bg-sky-500 text-white flex flex-col flex-shrink-0 shadow-xl">
-            <!-- Top Picture Logo -->
             <div class="p-6 flex flex-col items-center justify-center border-b border-sky-400/40">
-                <img src="vdvc.png" alt="Logo" class="w-50 h-50">
+                <img src="vdvc.png" alt="Logo" class="w-50 h-50 object-contain mb-2">
                 <span class="font-bold text-lg tracking-wide uppercase">VDVC Egg Farm</span>
+                <span class="mt-1 text-[10px] bg-sky-600 px-2 py-0.5 rounded-full font-semibold uppercase tracking-wider text-sky-100">
+                    <?= htmlspecialchars($user_role) ?> Panel
+                </span>
             </div>
             
-            <!-- Navigation Links -->
             <nav class="flex-1 p-4 space-y-2 mt-4">
                 <a href="dashboard.php" class="flex items-center space-x-3 px-4 py-3 rounded-xl hover:bg-sky-600/50 transition font-medium">
                     <i class="fa-solid fa-chart-pie w-5"></i>
                     <span>Dashboard</span>
                 </a>
-                <a href="reservation.php" class="flex items-center space-x-3 px-4 py-3 rounded-xl bg-sky-600 font-semibold shadow-inner transition">
+                <a href="reservation.php" class="flex items-center space-x-3 px-4 py-3 rounded-xl bg-sky-600/40 transition font-medium">
                     <i class="fa-solid fa-calendar-check w-5"></i>
                     <span>Reservation</span>
                 </a>
@@ -134,9 +178,15 @@ $today = date('Y-m-d');
                     <i class="fa-solid fa-clock-rotate-left w-5"></i>
                     <span>Reservation History</span>
                 </a>
-                <a href="view.php" class="flex items-center space-x-3 px-4 py-3 rounded-xl hover:bg-sky-600/50 transition font-medium">
+                <a href="profile.php" class="flex items-center space-x-3 px-4 py-3 rounded-xl hover:bg-sky-600/50 transition font-medium">
                     <i class="fa-solid fa-user w-5"></i>
                     <span>My Profile</span>
+                </a>
+                
+                <hr class="border-sky-400/30 my-2">
+                <a href="logout.php" class="flex items-center space-x-3 px-4 py-3 rounded-xl hover:bg-red-600/80 transition font-medium text-sky-100 hover:text-white">
+                    <i class="fa-solid fa-right-from-bracket w-5"></i>
+                    <span>Logout</span>
                 </a>
             </nav>
             
@@ -145,7 +195,6 @@ $today = date('Y-m-d');
             </div>
         </aside>
 
-        <!-- Right Side Main Content Wrapper -->
         <div class="flex-1 flex flex-col min-w-0">
 
             <?php if (!empty($message)): ?>
@@ -168,25 +217,42 @@ $today = date('Y-m-d');
                     <div class="relative">
                         <div onclick="toggleNotifications(event)" class="cursor-pointer relative p-1 hover:bg-gray-100 rounded-full transition">
                             <i class="fa-regular fa-bell text-gray-500 text-xl"></i>
-                            <span id="bell_badge" class="absolute top-1 right-1 w-2.5 h-2.5 bg-blue-500 rounded-full border-2 border-white <?php echo $is_submitted ? '' : 'hidden'; ?>"></span>
+                            <span id="bell_badge" class="absolute top-1 right-1 w-2.5 h-2.5 bg-blue-500 rounded-full border-2 border-white <?php echo $unread_count > 0 ? '' : 'hidden'; ?>"></span>
                         </div>
 
                         <div id="notification_dropdown" class="hidden absolute right-0 mt-3 w-80 bg-white border border-gray-200 rounded-xl shadow-xl z-50 overflow-hidden">
                             <div class="px-4 py-3 border-b border-gray-100 bg-gray-50 flex justify-between items-center">
                                 <span class="font-bold text-sm text-slate-800">Notifications</span>
-                                <span id="unread_count" class="text-xs bg-blue-100 text-blue-600 px-2 py-0.5 rounded-full font-medium"><?php echo $is_submitted ? '1 New' : '0 New'; ?></span>
+                                <span id="unread_count" class="text-xs <?php echo $unread_count > 0 ? 'bg-blue-100 text-blue-600' : 'bg-gray-100 text-gray-400'; ?> px-2 py-0.5 rounded-full font-medium">
+                                    <?php echo $unread_count > 0 ? $unread_count . ' New' : '0 New'; ?>
+                                </span>
                             </div>
                             <div id="notification_list" class="divide-y divide-gray-100 max-h-60 overflow-y-auto">
-                                <?php if ($is_submitted): ?>
-                                    <div class="p-4 hover:bg-slate-50 transition flex space-x-3 bg-blue-50/40">
-                                        <div class="bg-blue-100 text-blue-600 rounded-full w-8 h-8 flex items-center justify-center flex-shrink-0 mt-0.5">
-                                            <i class="fa-solid fa-circle-info text-xs"></i>
+                                <?php if (!empty($notifications)): ?>
+                                    <?php foreach ($notifications as $notif): 
+                                        $bg_class = !$notif['is_read'] ? 'bg-blue-50/30' : '';
+                                        $icon_bg = 'bg-blue-100 text-blue-600';
+                                        $icon_fa = 'fa-solid fa-circle-info';
+                                        
+                                        if ($notif['type'] === 'success') {
+                                            $icon_bg = 'bg-green-100 text-green-600';
+                                            $icon_fa = 'fa-solid fa-circle-check';
+                                        } elseif ($notif['type'] === 'alert') {
+                                            $icon_bg = 'bg-red-100 text-red-600';
+                                            $icon_fa = 'fa-solid fa-triangle-exclamation';
+                                        }
+                                    ?>
+                                        <div class="p-4 hover:bg-slate-50 transition flex space-x-3 <?php echo $bg_class; ?>">
+                                            <div class="<?php echo $icon_bg; ?> rounded-full w-8 h-8 flex items-center justify-center flex-shrink-0 mt-0.5">
+                                                <i class="<?php echo $icon_fa; ?> text-xs"></i>
+                                            </div>
+                                            <div class="flex-1 min-w-0">
+                                                <p class="text-xs text-gray-700 font-semibold mb-0.5 truncate"><?php echo htmlspecialchars($notif['title']); ?></p>
+                                                <p class="text-[11px] text-gray-500 break-words mb-1"><?php echo htmlspecialchars($notif['description']); ?></p>
+                                                <p class="text-[9px] text-gray-400"><?php echo date('M d, g:i a', strtotime($notif['created_at'])); ?></p>
+                                            </div>
                                         </div>
-                                        <div>
-                                            <p class="text-xs text-gray-700 font-semibold mb-0.5">Order submitted successfully!</p>
-                                            <p class="text-[10px] text-gray-400">Just now • Processing status active</p>
-                                        </div>
-                                    </div>
+                                    <?php endforeach; ?>
                                 <?php else: ?>
                                     <div id="empty_notification_placeholder" class="p-8 text-center text-gray-400 text-xs">
                                         <i class="fa-regular fa-bell-slash text-2xl mb-2 block text-gray-300"></i>
@@ -240,42 +306,42 @@ $today = date('Y-m-d');
                             <div>
                                 <label class="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Egg Size/Type Selection</label>
                                 <div class="grid grid-cols-4 gap-2 mb-3">
-                                <button type="button" data-egg="Extra Small" onclick="setEgg('Extra Small')" class="egg-btn flex flex-col items-center p-2 border rounded-lg transition-all <?php echo $egg_type === 'Small' ? 'border-blue-500 bg-blue-50' : 'border-gray-200 hover:bg-gray-50'; ?>">
+                                    <button type="button" data-egg="Extra Small" onclick="setEgg('Extra Small')" class="egg-btn flex flex-col items-center p-2 border rounded-lg transition-all border-gray-200 hover:bg-gray-50">
                                         <span class="w-6 h-8 bg-slate-100 border border-slate-400 rounded-full inline-block shadow-inner mb-1"></span>
                                         <span class="text-[10px] text-gray-600 font-medium">Extra Small</span>
                                         <span class="text-[9px] text-blue-600 font-bold mt-0.5">₱140 / tray</span>
                                     </button>
-                                    <button type="button" data-egg="Small" onclick="setEgg('Small')" class="egg-btn flex flex-col items-center p-2 border rounded-lg transition-all <?php echo $egg_type === 'Small' ? 'border-blue-500 bg-blue-50' : 'border-gray-200 hover:bg-gray-50'; ?>">
+                                    <button type="button" data-egg="Small" onclick="setEgg('Small')" class="egg-btn flex flex-col items-center p-2 border rounded-lg transition-all border-gray-200 hover:bg-gray-50">
                                         <span class="w-6 h-8 bg-slate-100 border border-slate-400 rounded-full inline-block shadow-inner mb-1"></span>
                                         <span class="text-[10px] text-gray-600 font-medium">Small</span>
                                         <span class="text-[9px] text-blue-600 font-bold mt-0.5">₱150 / tray</span>
                                     </button>
-                                    <button type="button" data-egg="Medium" onclick="setEgg('Medium')" class="egg-btn flex flex-col items-center p-2 border rounded-lg transition-all <?php echo $egg_type === 'Small' ? 'border-blue-500 bg-blue-50' : 'border-gray-200 hover:bg-gray-50'; ?>">
+                                    <button type="button" data-egg="Medium" onclick="setEgg('Medium')" class="egg-btn flex flex-col items-center p-2 border rounded-lg transition-all border-gray-200 hover:bg-gray-50">
                                         <span class="w-6 h-8 bg-slate-100 border border-slate-400 rounded-full inline-block shadow-inner mb-1"></span>
                                         <span class="text-[10px] text-gray-600 font-medium">Medium</span>
                                         <span class="text-[9px] text-blue-600 font-bold mt-0.5">₱175 / tray</span>
                                     </button>
-                                    <button type="button" data-egg="Large" onclick="setEgg('Large')" class="egg-btn flex flex-col items-center p-2 border rounded-lg transition-all <?php echo $egg_type === 'Small' ? 'border-blue-500 bg-blue-50' : 'border-gray-200 hover:bg-gray-50'; ?>">
+                                    <button type="button" data-egg="Large" onclick="setEgg('Large')" class="egg-btn flex flex-col items-center p-2 border rounded-lg transition-all border-gray-200 hover:bg-gray-50">
                                         <span class="w-6 h-8 bg-slate-100 border border-slate-400 rounded-full inline-block shadow-inner mb-1"></span>
                                         <span class="text-[10px] text-gray-600 font-medium">Large</span>
                                         <span class="text-[9px] text-blue-600 font-bold mt-0.5">₱195 / tray</span>
                                     </button>
-                                    <button type="button" data-egg="Extra Large" onclick="setEgg('Extra Large')" class="egg-btn flex flex-col items-center p-2 border rounded-lg transition-all <?php echo $egg_type === 'Small' ? 'border-blue-500 bg-blue-50' : 'border-gray-200 hover:bg-gray-50'; ?>">
+                                    <button type="button" data-egg="Extra Large" onclick="setEgg('Extra Large')" class="egg-btn flex flex-col items-center p-2 border rounded-lg transition-all border-gray-200 hover:bg-gray-50">
                                         <span class="w-6 h-8 bg-slate-100 border border-slate-400 rounded-full inline-block shadow-inner mb-1"></span>
                                         <span class="text-[10px] text-gray-600 font-medium">Extra Large</span>
                                         <span class="text-[9px] text-blue-600 font-bold mt-0.5">₱235 / tray</span>
                                     </button>
-                                    <button type="button" data-egg="Jumbo" onclick="setEgg('Jumbo')" class="egg-btn flex flex-col items-center p-2 border rounded-lg transition-all <?php echo $egg_type === 'Small' ? 'border-blue-500 bg-blue-50' : 'border-gray-200 hover:bg-gray-50'; ?>">
+                                    <button type="button" data-egg="Jumbo" onclick="setEgg('Jumbo')" class="egg-btn flex flex-col items-center p-2 border rounded-lg transition-all border-gray-200 hover:bg-gray-50">
                                         <span class="w-6 h-8 bg-slate-100 border border-slate-400 rounded-full inline-block shadow-inner mb-1"></span>
                                         <span class="text-[10px] text-gray-600 font-medium">Jumbo</span>
                                         <span class="text-[9px] text-blue-600 font-bold mt-0.5">₱255 / tray</span>
                                     </button>
-                                    <button type="button" data-egg="Super Jumbo" onclick="setEgg('Super Jumbo')" class="egg-btn flex flex-col items-center p-2 border rounded-lg transition-all <?php echo $egg_type === 'Small' ? 'border-blue-500 bg-blue-50' : 'border-gray-200 hover:bg-gray-50'; ?>">
+                                    <button type="button" data-egg="Super Jumbo" onclick="setEgg('Super Jumbo')" class="egg-btn flex flex-col items-center p-2 border rounded-lg transition-all border-gray-200 hover:bg-gray-50">
                                         <span class="w-6 h-8 bg-slate-100 border border-slate-400 rounded-full inline-block shadow-inner mb-1"></span>
                                         <span class="text-[10px] text-gray-600 font-medium">Super Jumbo</span>
                                         <span class="text-[9px] text-blue-600 font-bold mt-0.5">₱270 / tray</span>
                                     </button>
-                                    <button type="button" data-egg="Double Yolk" onclick="setEgg('Double Yolk')" class="egg-btn flex flex-col items-center p-2 border rounded-lg transition-all <?php echo $egg_type === 'Small' ? 'border-blue-500 bg-blue-50' : 'border-gray-200 hover:bg-gray-50'; ?>">
+                                    <button type="button" data-egg="Double Yolk" onclick="setEgg('Double Yolk')" class="egg-btn flex flex-col items-center p-2 border rounded-lg transition-all border-gray-200 hover:bg-gray-50">
                                         <span class="w-6 h-8 bg-slate-100 border border-slate-400 rounded-full inline-block shadow-inner mb-1"></span>
                                         <span class="text-[10px] text-gray-600 font-medium">Double Yolk</span>
                                         <span class="text-[9px] text-blue-600 font-bold mt-0.5">₱320 / tray</span>
@@ -312,11 +378,11 @@ $today = date('Y-m-d');
                                 <label class="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Delivery Method</label>
                                 <input type="hidden" name="delivery_method" id="delivery_method_input" value="<?php echo htmlspecialchars($delivery_method); ?>">
                                 <div class="grid grid-cols-2 gap-4">
-                                    <button type="button" id="btn-delivery" onclick="setMethod('Delivery')" class="p-3 border rounded-lg flex flex-col items-center justify-center space-y-1 transition-all <?php echo $delivery_method === 'Delivery' ? 'border-blue-500 bg-blue-50 text-blue-600' : 'border-gray-200 text-gray-500'; ?>">
+                                    <button type="button" id="btn-delivery" onclick="setMethod('Delivery')" class="p-3 border rounded-lg flex flex-col items-center justify-center space-y-1 transition-all border-gray-200 text-gray-500">
                                         <i class="fa-solid fa-truck text-lg"></i>
                                         <span class="text-xs font-semibold">Delivery</span>
                                     </button>
-                                    <button type="button" id="btn-pickup" onclick="setMethod('Pickup')" class="p-3 border rounded-lg flex flex-col items-center justify-center space-y-1 transition-all <?php echo $delivery_method === 'Pickup' ? 'border-blue-500 bg-blue-50 text-blue-600' : 'border-gray-200 text-gray-500'; ?>">
+                                    <button type="button" id="btn-pickup" onclick="setMethod('Pickup')" class="p-3 border rounded-lg flex flex-col items-center justify-center space-y-1 transition-all border-gray-200 text-gray-500">
                                         <i class="fa-solid fa-shop text-lg"></i>
                                         <span class="text-xs font-semibold">Pickup</span>
                                     </button>
@@ -370,7 +436,7 @@ $today = date('Y-m-d');
                                     </div>
                                     
                                     <div class="z-10 flex flex-col items-center">
-                                        <div id="node_processing" class="w-5 h-5 rounded-full border-4 border-white shadow transition-colors duration-500 <?php echo $is_submitted ? 'bg-blue-600' : 'bg-gray-300'; ?>"></div>
+                                        <div id="node_processing" class="w-5 h-5 rounded-full border-4 border-white shadow bg-gray-300 transition-colors duration-500 <?php echo $is_submitted ? 'bg-blue-600' : 'bg-gray-300'; ?>"></div>
                                         <span id="text_processing" class="text-xs mt-1 transition-colors duration-500 <?php echo $is_submitted ? 'text-blue-600 font-semibold' : 'text-gray-400 font-medium'; ?>">Processing</span>
                                     </div>
                                     
@@ -496,6 +562,19 @@ $today = date('Y-m-d');
         function executeCancellation() {
             closeCancellationModal();
             
+            // Send an asynchronous post request via Fetch API to record the cancellation into database logs natively
+            fetch('?action=log_cancellation', {
+                method: 'POST'
+            })
+            .then(response => response.json())
+            .then(data => {
+                if(data.status === 'success') {
+                    // Prepend notification element instantly inside the active user interface layout matching database structure
+                    prependCancellationUiNotification();
+                }
+            })
+            .catch(error => console.error('Error recording cancellation log:', error));
+
             // Clear Form State fields
             document.getElementById('cust_name_input').value = '';
             document.getElementById('contact_input').value = '';
@@ -518,7 +597,6 @@ $today = date('Y-m-d');
             if (phpBanner) phpBanner.classList.add('hidden');
 
             resetTimelineTracker();
-            triggerCancellationNotification();
         }
 
         function resetTimelineTracker() {
@@ -535,28 +613,33 @@ $today = date('Y-m-d');
             if (textSubmitted) textSubmitted.className = "text-xs font-medium text-gray-400 mt-1 transition-colors duration-500";
         }
 
-        function triggerCancellationNotification() {
+        function prependCancellationUiNotification() {
             const badge = document.getElementById('bell_badge');
             if (badge) badge.classList.remove('hidden');
 
             const unreadCount = document.getElementById('unread_count');
-            if (unreadCount) {
-                unreadCount.innerText = "1 New";
-                unreadCount.className = "text-xs bg-blue-100 text-blue-600 px-2 py-0.5 rounded-full font-medium";
-            }
+            let currentUnread = parseInt(unreadCount.innerText) || 0;
+            currentUnread++;
+            unreadCount.innerText = currentUnread + " New";
+            unreadCount.className = "text-xs bg-blue-100 text-blue-600 px-2 py-0.5 rounded-full font-medium";
 
             const list = document.getElementById('notification_list');
-            list.innerHTML = `
-                <div class="p-4 hover:bg-slate-50 transition flex space-x-3 bg-red-50/40">
+            const placeholder = document.getElementById('empty_notification_placeholder');
+            if(placeholder) placeholder.remove();
+
+            const newNotifHtml = `
+                <div class="p-4 hover:bg-slate-50 transition flex space-x-3 bg-blue-50/30">
                     <div class="bg-red-100 text-red-600 rounded-full w-8 h-8 flex items-center justify-center flex-shrink-0 mt-0.5">
                         <i class="fa-solid fa-triangle-exclamation text-xs"></i>
                     </div>
-                    <div>
-                        <p class="text-xs text-gray-700 font-semibold mb-0.5">Draft process cancelled</p>
-                        <p class="text-[10px] text-gray-400">Just now • Timeline reset to Draft status</p>
+                    <div class="flex-1 min-w-0">
+                        <p class="text-xs text-gray-700 font-semibold mb-0.5 truncate">Draft process cancelled</p>
+                        <p class="text-[11px] text-gray-500 break-words mb-1">Timeline reset to Draft status</p>
+                        <p class="text-[9px] text-gray-400">Just now</p>
                     </div>
                 </div>
             `;
+            list.insertAdjacentHTML('afterbegin', newNotifHtml);
         }
 
         function toggleNotifications(event) {
