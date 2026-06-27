@@ -197,12 +197,6 @@ $today = date('Y-m-d');
 
         <div class="flex-1 flex flex-col min-w-0">
 
-            <?php if (!empty($message)): ?>
-                <div id="php_banner" class="p-4 bg-green-100 border-b border-green-500 text-green-700 text-center font-medium shadow-sm">
-                    <?php echo $message; ?>
-                </div>
-            <?php endif; ?>
-
             <header class="bg-white border-b border-gray-200 px-8 py-4 flex justify-between items-center relative">
                 <h1 class="text-2xl font-bold text-slate-800">📝 Customer Reservation</h1>
                 <div class="flex items-center space-x-4">
@@ -428,7 +422,7 @@ $today = date('Y-m-d');
                                 <div class="relative flex items-center justify-between px-4">
                                     <div class="absolute left-4 right-4 h-1 bg-gray-200 top-1/2 -translate-y-1/2 z-0"></div>
                                     
-                                    <div id="timeline_progress_bar" class="absolute left-4 h-1 bg-blue-500 top-1/2 -translate-y-1/2 z-0 transition-all duration-500 <?php echo $is_submitted ? 'w-1/2' : 'w-0'; ?>"></div>
+                                    <div id="timeline_progress_bar" class="absolute left-4 h-1 bg-blue-500 top-1/2 -translate-y-1/2 z-0 transition-all duration-500 <?php echo $is_submitted ? 'w-full' : 'w-0'; ?>"></div>
                                     
                                     <div class="z-10 flex flex-col items-center">
                                         <div class="w-5 h-5 rounded-full bg-blue-600 border-4 border-white shadow"></div>
@@ -441,8 +435,8 @@ $today = date('Y-m-d');
                                     </div>
                                     
                                     <div class="z-10 flex flex-col items-center">
-                                        <div id="node_submitted" class="w-5 h-5 rounded-full border-4 border-white shadow bg-gray-300 transition-colors duration-500"></div>
-                                        <span id="text_submitted" class="text-xs font-medium text-gray-400 mt-1 transition-colors duration-500">Submitted</span>
+                                        <div id="node_submitted" class="w-5 h-5 rounded-full border-4 border-white shadow bg-gray-300 transition-colors duration-500 <?php echo $is_submitted ? 'bg-blue-600' : 'bg-gray-300'; ?>"></div>
+                                        <span id="text_submitted" class="text-xs font-medium text-gray-400 mt-1 transition-colors duration-500 <?php echo $is_submitted ? 'text-blue-600 font-semibold' : 'text-gray-400 font-medium'; ?>">Submitted</span>
                                     </div>
                                 </div>
                             </div>
@@ -464,6 +458,26 @@ $today = date('Y-m-d');
                 </form>
             </div>
             
+        </div>
+    </div>
+
+    <!-- Success Modal Window Popup -->
+    <div id="success_modal" class="hidden fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center z-[100] p-4">
+        <div class="bg-white rounded-xl shadow-2xl border border-gray-100 max-w-md w-full p-6 text-center space-y-4 scale-95 transition-transform duration-200">
+            <div class="w-16 h-16 bg-green-100 text-green-600 rounded-full flex items-center justify-center mx-auto text-3xl">
+                <i class="fa-solid fa-circle-check"></i>
+            </div>
+            <div class="space-y-1">
+                <h3 class="text-xl font-bold text-slate-800">Success!</h3>
+                <p id="success_modal_message" class="text-sm text-gray-500 leading-relaxed">
+                    <?php echo htmlspecialchars($message); ?>
+                </p>
+            </div>
+            <div class="pt-2">
+                <button type="button" onclick="closeSuccessModal()" class="w-full bg-green-500 hover:bg-green-600 text-white font-semibold px-4 py-2 rounded-lg text-sm shadow-md transition">
+                    Great, Thank You!
+                </button>
+            </div>
         </div>
     </div>
 
@@ -551,6 +565,14 @@ $today = date('Y-m-d');
             }, 600);
         }
 
+        function openSuccessModal() {
+            document.getElementById('success_modal').classList.remove('hidden');
+        }
+
+        function closeSuccessModal() {
+            document.getElementById('success_modal').classList.add('hidden');
+        }
+
         function openCancellationModal() {
             document.getElementById('cancellation_modal').classList.remove('hidden');
         }
@@ -592,9 +614,6 @@ $today = date('Y-m-d');
             
             updateLivePrice();
             updateSummaryAddress('');
-            
-            const phpBanner = document.getElementById('php_banner');
-            if (phpBanner) phpBanner.classList.add('hidden');
 
             resetTimelineTracker();
         }
@@ -730,6 +749,13 @@ $today = date('Y-m-d');
                 document.getElementById('reservation_form').reset();
             }
         });
+
+        // Trigger popup upon post-submission load dynamically
+        <?php if (!empty($message)): ?>
+            document.addEventListener('DOMContentLoaded', () => {
+                openSuccessModal();
+            });
+        <?php endif; ?>
     </script>
 </body>
 </html>

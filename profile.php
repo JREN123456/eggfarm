@@ -360,3 +360,5 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['save_profile_changes']
     </script>
 </body>
 </html>
+
+📋 My Reservation History

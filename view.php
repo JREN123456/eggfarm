@@ -53,6 +53,29 @@ if ($filter_method !== '') {
     $types .= "s";
 }
 
+// Fetch all persistent historical user notifications to render inside dropdown
+$notifications = [];
+$notif_stmt = $conn->prepare("SELECT id, title, description, type, is_read, created_at FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 15");
+$notif_stmt->bind_param("i", $user_id);
+$notif_stmt->execute();
+$result = $notif_stmt->get_result();
+while ($row = $result->fetch_assoc()) {
+    $notifications[] = $row;
+}
+
+// Add this to your PHP block in view.php
+$notifications = [];
+$notif_stmt = $conn->prepare("SELECT title, description, type, is_read, created_at FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 15");
+$notif_stmt->bind_param("i", $user_id);
+$notif_stmt->execute();
+$result_notif = $notif_stmt->get_result();
+while ($row = $result_notif->fetch_assoc()) {
+    $notifications[] = $row;
+}
+$unread_count = 0;
+foreach ($notifications as $n) { if (!$n['is_read']) $unread_count++; 
+}
+
 $query .= " ORDER BY id DESC";
 
 // Prepare and execute query
@@ -158,10 +181,59 @@ $result = $stmt->get_result();
 
         <div class="flex-1 flex flex-col min-w-0">
 
-            <header class="bg-white border-b border-gray-200 px-8 py-4 flex justify-between items-center">
-                <h1 class="text-2xl font-bold text-slate-800">
-                    📋 <?= strtolower($user_role) === 'customer' ? 'My Reservation History' : 'All Reservation Histories' ?>
-                </h1>
+        <header class="bg-white border-b border-gray-200 px-8 py-4 flex justify-between items-center relative">
+                <h1 class="text-2xl font-bold text-slate-800">📋 My Reservation History</h1>
+                <div class="flex items-center space-x-4">                  
+                    <div class="relative">
+                        <div onclick="toggleNotifications(event)" class="cursor-pointer relative p-1 hover:bg-gray-100 rounded-full transition">
+                            <i class="fa-regular fa-bell text-gray-500 text-xl"></i>
+                            <span id="bell_badge" class="absolute top-1 right-1 w-2.5 h-2.5 bg-blue-500 rounded-full border-2 border-white <?php echo $unread_count > 0 ? '' : 'hidden'; ?>"></span>
+                        </div>
+
+                        <div id="notification_dropdown" class="hidden absolute right-0 mt-3 w-80 bg-white border border-gray-200 rounded-xl shadow-xl z-50 overflow-hidden">
+                            <div class="px-4 py-3 border-b border-gray-100 bg-gray-50 flex justify-between items-center">
+                                <span class="font-bold text-sm text-slate-800">Notifications</span>
+                                <span id="unread_count" class="text-xs <?php echo $unread_count > 0 ? 'bg-blue-100 text-blue-600' : 'bg-gray-100 text-gray-400'; ?> px-2 py-0.5 rounded-full font-medium">
+                                    <?php echo $unread_count > 0 ? $unread_count . ' New' : '0 New'; ?>
+                                </span>
+                            </div>
+                            <div id="notification_list" class="divide-y divide-gray-100 max-h-60 overflow-y-auto">
+                                <?php if (!empty($notifications)): ?>
+                                    <?php foreach ($notifications as $notif): 
+                                        $bg_class = !$notif['is_read'] ? 'bg-blue-50/30' : '';
+                                        $icon_bg = 'bg-blue-100 text-blue-600';
+                                        $icon_fa = 'fa-solid fa-circle-info';
+                                        
+                                        if ($notif['type'] === 'success') {
+                                            $icon_bg = 'bg-green-100 text-green-600';
+                                            $icon_fa = 'fa-solid fa-circle-check';
+                                        } elseif ($notif['type'] === 'alert') {
+                                            $icon_bg = 'bg-red-100 text-red-600';
+                                            $icon_fa = 'fa-solid fa-triangle-exclamation';
+                                        }
+                                    ?>
+                                        <div class="p-4 hover:bg-slate-50 transition flex space-x-3 <?php echo $bg_class; ?>">
+                                            <div class="<?php echo $icon_bg; ?> rounded-full w-8 h-8 flex items-center justify-center flex-shrink-0 mt-0.5">
+                                                <i class="<?php echo $icon_fa; ?> text-xs"></i>
+                                            </div>
+                                            <div class="flex-1 min-w-0">
+                                                <p class="text-xs text-gray-700 font-semibold mb-0.5 truncate"><?php echo htmlspecialchars($notif['title']); ?></p>
+                                                <p class="text-[11px] text-gray-500 break-words mb-1"><?php echo htmlspecialchars($notif['description']); ?></p>
+                                                <p class="text-[9px] text-gray-400"><?php echo date('M d, g:i a', strtotime($notif['created_at'])); ?></p>
+                                            </div>
+                                        </div>
+                                    <?php endforeach; ?>
+                                <?php else: ?>
+                                    <div id="empty_notification_placeholder" class="p-8 text-center text-gray-400 text-xs">
+                                        <i class="fa-regular fa-bell-slash text-2xl mb-2 block text-gray-300"></i>
+                                        No new notifications
+                                    </div>
+                                <?php endif; ?>
+                            </div>
+                        </div>
+                    </div>
+
+                </div>
             </header>
 
             <div class="max-w-7xl w-full mx-auto p-6 space-y-6">
@@ -311,10 +383,14 @@ $result = $stmt->get_result();
                                             ₱<?= number_format($row['total_price'], 2) ?>
                                         </td>
 
-                                        <td class="px-5 py-4 text-center">
-                                            <button onclick="printReceipt(<?= $receipt_json ?>)" class="bg-emerald-500 hover:bg-emerald-600 text-white font-semibold text-xs py-1.5 px-3 rounded shadow transition flex items-center mx-auto space-x-1">
-                                                <i class="fa-solid fa-print"></i>
-                                                <span>Receipt</span>
+                                        <td class="px-5 py-4 text-center flex justify-center space-x-2">
+                                             <button onclick="printReceipt(<?= $receipt_json ?>)" class="bg-emerald-500 hover:bg-emerald-600 text-white font-semibold text-xs py-1.5 px-3 rounded shadow transition">
+                                             <i class="fa-solid fa-print"></i>
+                                            </button>
+    
+                                        <!-- Trigger Button -->
+                                            <button onclick="openCancelModal(<?= $row['id'] ?>)" class="bg-red-500 hover:bg-red-600 text-white font-semibold text-xs py-1.5 px-3 rounded shadow transition">
+                                            <i class="fa-solid fa-trash"></i>
                                             </button>
                                         </td>
 
@@ -424,6 +500,47 @@ $result = $stmt->get_result();
         window.print();
     }
     </script>
+    <!-- Cancel Modal -->
+<div id="cancelModal" class="fixed inset-0 bg-black/50 hidden flex items-center justify-center z-50">
+    <div class="bg-white p-6 rounded-xl shadow-2xl max-w-sm w-full mx-4">
+        <h3 class="text-lg font-bold text-gray-800 mb-2">Confirm Cancellation</h3>
+        <p class="text-sm text-gray-600 mb-6">Are you sure you want to cancel this reservation? This action cannot be undone.</p>
+        <form id="cancelForm" action="cancel.php" method="POST">
+            <input type="hidden" name="id" id="cancelId">
+            <div class="flex space-x-3">
+                <button type="button" onclick="closeCancelModal()" class="flex-1 bg-gray-200 text-gray-700 py-2 rounded-lg font-semibold text-sm">Keep</button>
+                <button type="submit" class="flex-1 bg-red-500 text-white py-2 rounded-lg font-semibold text-sm">Yes, Cancel</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script>
+function openCancelModal(id) {
+    document.getElementById('cancelId').value = id;
+    document.getElementById('cancelModal').classList.remove('hidden');
+}
+
+function closeCancelModal() {
+    document.getElementById('cancelModal').classList.add('hidden');
+}
+
+function toggleNotifications(event) {
+            event.stopPropagation();
+            const dropdown = document.getElementById('notification_dropdown');
+            dropdown.classList.toggle('hidden');
+            
+            if(!dropdown.classList.contains('hidden')) {
+                const badge = document.getElementById('bell_badge');
+                if(badge) badge.classList.add('hidden');
+                const unreadCount = document.getElementById('unread_count');
+                if(unreadCount) {
+                    unreadCount.innerText = "0 New";
+                    unreadCount.className = "text-xs bg-gray-100 text-gray-400 px-2 py-0.5 rounded-full font-medium";
+                }
+            }
+        }
+</script>
 </body>
 </html>
 <?php 
