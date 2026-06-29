@@ -15,10 +15,12 @@ if (!isset($_SESSION['user_id'])) {
 $user_id = $_SESSION['user_id'];
 $user_role = isset($_SESSION['role']) ? $_SESSION['role'] : 'Customer'; // Default fallback
 
-// Get search and filter terms from GET request
+// Get search, filter terms, and current page from GET request
 $search = isset($_GET['search']) ? trim($_GET['search']) : '';
 $filter_egg = isset($_GET['egg_type']) ? trim($_GET['egg_type']) : '';
 $filter_method = isset($_GET['delivery_method']) ? trim($_GET['delivery_method']) : '';
+$page = isset($_GET['page']) ? max(1, (int)$_GET['page']) : 1;
+$limit = 5; // 5 items per page
 
 // Build dynamic SQL query safely
 $query = "SELECT * FROM reservations WHERE 1=1";
@@ -32,7 +34,7 @@ if (strtolower($user_role) === 'customer') {
     $types .= "i";
 }
 
-// Apply Filters (Admin can search everything; Customer searches within their own)
+// Apply Filters
 if ($search !== '') {
     $query .= " AND (customer_name LIKE ? OR contact_number LIKE ?)";
     $search_param = "%" . $search . "%";
@@ -53,17 +55,7 @@ if ($filter_method !== '') {
     $types .= "s";
 }
 
-// Fetch all persistent historical user notifications to render inside dropdown
-$notifications = [];
-$notif_stmt = $conn->prepare("SELECT id, title, description, type, is_read, created_at FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 15");
-$notif_stmt->bind_param("i", $user_id);
-$notif_stmt->execute();
-$result = $notif_stmt->get_result();
-while ($row = $result->fetch_assoc()) {
-    $notifications[] = $row;
-}
-
-// Add this to your PHP block in view.php
+// Fetch user notifications
 $notifications = [];
 $notif_stmt = $conn->prepare("SELECT title, description, type, is_read, created_at FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 15");
 $notif_stmt->bind_param("i", $user_id);
@@ -72,8 +64,11 @@ $result_notif = $notif_stmt->get_result();
 while ($row = $result_notif->fetch_assoc()) {
     $notifications[] = $row;
 }
+$notif_stmt->close();
+
 $unread_count = 0;
-foreach ($notifications as $n) { if (!$n['is_read']) $unread_count++; 
+foreach ($notifications as $n) { 
+    if (!$n['is_read']) $unread_count++; 
 }
 
 $query .= " ORDER BY id DESC";
@@ -85,6 +80,50 @@ if (!empty($params)) {
 }
 $stmt->execute();
 $result = $stmt->get_result();
+
+// GROUPING LOGIC FOR BUNDLES
+$grouped_reservations = [];
+while ($row = $result->fetch_assoc()) {
+    $timestamp_key = isset($row['created_at']) ? $row['created_at'] : $row['reservation_date'];
+    $group_key = $row['customer_name'] . '_' . $row['contact_number'] . '_' . $timestamp_key . '_' . $row['delivery_method'];
+    
+    if (!isset($grouped_reservations[$group_key])) {
+        $grouped_reservations[$group_key] = [
+            'id' => $row['id'], // Reference fallback for old design ID display
+            'ids' => [$row['id']],
+            'customer_name' => $row['customer_name'],
+            'contact_number' => $row['contact_number'],
+            'delivery_address' => $row['delivery_address'],
+            'delivery_method' => $row['delivery_method'],
+            'reservation_date' => $row['reservation_date'],
+            'total_price' => 0, 
+            'items' => []
+        ];
+    } else {
+        $grouped_reservations[$group_key]['ids'][] = $row['id'];
+    }
+
+    $grouped_reservations[$group_key]['items'][] = [
+        'egg_type' => $row['egg_type'],
+        'quantity' => (int)$row['quantity'],
+        'total_price' => (float)$row['total_price']
+    ];
+    $grouped_reservations[$group_key]['total_price'] += (float)$row['total_price'];
+}
+$stmt->close();
+
+// PAGINATION LOGIC ON THE GROUPED ARRAY
+$total_records = count($grouped_reservations);
+$total_pages = ceil($total_records / $limit);
+$offset = ($page - 1) * $limit;
+$paged_reservations = array_slice($grouped_reservations, $offset, $limit);
+
+// Helper function to build URL parameters cleanly for pagination links
+function getPaginationUrl($page_num) {
+    $params = $_GET;
+    $params['page'] = $page_num;
+    return '?' . http_build_query($params);
+}
 ?>
 
 <!DOCTYPE html>
@@ -97,11 +136,10 @@ $result = $stmt->get_result();
     <link class="no-print" rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     
     <style>
-        /* CSS Print Styles to format a clean receipt layout on paper */
         @media print {
             @page {
                 size: portrait;
-                margin: 0; /* Clears margins for full page usage */
+                margin: 0;
             }
             html, body {
                 height: 100%;
@@ -112,7 +150,6 @@ $result = $stmt->get_result();
             body * {
                 visibility: hidden;
             }
-            /* CRITICAL FIX: display: block !important overrides Tailwind's .hidden class */
             #receipt-print-window, #receipt-print-window * {
                 visibility: visible;
                 display: block !important;
@@ -124,7 +161,7 @@ $result = $stmt->get_result();
                 left: 0;
                 top: 0;
                 width: 100%;
-                height: 100vh; /* Expands to fill the whole sheet */
+                height: 100vh;
                 padding: 30px;
                 box-sizing: border-box;
                 background: white !important;
@@ -168,10 +205,11 @@ $result = $stmt->get_result();
                 </a>
                 
                 <hr class="border-sky-400/30 my-2">
-                <a href="logout.php" class="flex items-center space-x-3 px-4 py-3 rounded-xl hover:bg-red-600/80 transition font-medium text-sky-100 hover:text-white">
-                    <i class="fa-solid fa-right-from-bracket w-5"></i>
-                    <span>Logout</span>
-                </a>
+                <!-- Locate this inside your <nav> tag and replace it with this: -->
+<a href="javascript:void(0);" onclick="openLogoutModal()" class="flex items-center space-x-3 px-4 py-3 rounded-xl hover:bg-red-600/80 transition font-medium text-sky-100 hover:text-white">
+    <i class="fa-solid fa-right-from-bracket w-5"></i>
+    <span>Logout</span>
+</a>
             </nav>
             
             <div class="p-4 text-center text-xs text-sky-200 border-t border-sky-400/30">
@@ -289,15 +327,38 @@ $result = $stmt->get_result();
 
                 <div class="bg-white shadow-md rounded-xl border border-gray-200 overflow-hidden">
 
-                    <div class="p-5 border-b flex justify-between items-center bg-slate-50">
+                    <div class="p-5 border-b flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-slate-50">
                         <h2 class="text-lg font-bold text-slate-800 flex items-center space-x-2">
                             <i class="fa-solid fa-list-check text-sky-500"></i>
                             <span>📋 Reservation List</span>
                         </h2>
-                        <?php if ($search !== '' || $filter_egg !== '' || $filter_method !== ''): ?>
-                            <span class="text-xs bg-sky-100 text-sky-700 px-2.5 py-1 rounded-full font-medium">
-                                Found <?= $result->num_rows ?> filtered result(s)
-                            </span>
+
+                        <?php if ($total_pages > 1): ?>
+                            <div class="flex items-center space-x-3 self-end sm:self-auto">
+                                <div class="text-xs text-gray-500 hidden md:block">
+                                    <span class="font-semibold text-gray-700"><?= $offset + 1 ?></span>-
+                                    <span class="font-semibold text-gray-700"><?= min($offset + $limit, $total_records) ?></span> of 
+                                    <span class="font-semibold text-gray-700"><?= $total_records ?></span>
+                                </div>
+                                <div class="inline-flex space-x-1">
+                                    <a href="<?= $page > 1 ? getPaginationUrl($page - 1) : '#' ?>" 
+                                       class="px-2.5 py-1.5 border rounded-lg text-xs font-semibold shadow-sm transition <?= $page > 1 ? 'bg-white border-gray-300 text-gray-700 hover:bg-gray-50' : 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed pointer-events-none' ?>">
+                                        <i class="fa-solid fa-chevron-left"></i>
+                                    </a>
+
+                                    <?php for ($i = 1; $i <= $total_pages; $i++): ?>
+                                        <a href="<?= getPaginationUrl($i) ?>" 
+                                           class="px-2.5 py-1.5 border rounded-lg text-xs font-bold shadow-sm transition <?= $page === $i ? 'bg-sky-500 border-sky-500 text-white' : 'bg-white border-gray-300 text-gray-700 hover:bg-gray-50' ?>">
+                                            <?= $i ?>
+                                        </a>
+                                    <?php endfor; ?>
+
+                                    <a href="<?= $page < $total_pages ? getPaginationUrl($page + 1) : '#' ?>" 
+                                       class="px-2.5 py-1.5 border rounded-lg text-xs font-semibold shadow-sm transition <?= $page < $total_pages ? 'bg-white border-gray-300 text-gray-700 hover:bg-gray-50' : 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed pointer-events-none' ?>">
+                                        <i class="fa-solid fa-chevron-right"></i>
+                                    </a>
+                                </div>
+                            </div>
                         <?php endif; ?>
                     </div>
 
@@ -309,8 +370,8 @@ $result = $stmt->get_result();
                                     <th class="px-5 py-3.5">Customer</th>
                                     <th class="px-5 py-3.5">Contact</th>
                                     <th class="px-5 py-3.5">Address</th>
-                                    <th class="px-5 py-3.5">Egg Type</th>
-                                    <th class="px-5 py-3.5 text-center">Qty</th>
+                                    <th class="px-5 py-3.5">Egg Breakdown</th>
+                                    <th class="px-5 py-3.5 text-center">Total Qty</th>
                                     <th class="px-5 py-3.5">Method</th>
                                     <th class="px-5 py-3.5">Date</th>
                                     <th class="px-5 py-3.5 text-right">Total</th>
@@ -320,9 +381,11 @@ $result = $stmt->get_result();
 
                             <tbody class="divide-y divide-gray-100 bg-white">
 
-                            <?php if ($result && $result->num_rows > 0): ?>
-                                <?php while($row = $result->fetch_assoc()): 
+                            <?php if (!empty($paged_reservations)): ?>
+                                <?php foreach($paged_reservations as $row): 
                                     $receipt_json = htmlspecialchars(json_encode($row), ENT_QUOTES, 'UTF-8');
+                                    $total_qty = array_sum(array_column($row['items'], 'quantity'));
+                                    $ids_list = implode(',', $row['ids']);
                                 ?>
                                     <tr class="hover:bg-slate-50/80 transition">
 
@@ -338,32 +401,37 @@ $result = $stmt->get_result();
                                             <?= htmlspecialchars($row['delivery_address']) ?>
                                         </td>
 
-                                        <td class="px-5 py-4">
-                                            <span class="px-2.5 py-1 rounded-full text-[11px] font-bold tracking-wide shadow-sm
-                                                <?php
-                                                switch($row['egg_type']) {
-                                                    case 'Extra Small':
-                                                    case 'Small': 
-                                                        echo 'bg-gray-100 text-gray-700 border border-gray-200'; break;
-                                                    case 'Medium': 
-                                                        echo 'bg-yellow-100 text-yellow-800 border border-yellow-200'; break;
-                                                    case 'Large': 
-                                                        echo 'bg-orange-100 text-orange-800 border border-orange-200'; break;
-                                                    case 'Extra Large':
-                                                    case 'Jumbo':
-                                                    case 'Super Jumbo':
-                                                    case 'Double Yolk': 
-                                                        echo 'bg-red-100 text-red-800 border border-red-200'; break;
-                                                    default:
-                                                        echo 'bg-slate-100 text-slate-700';
-                                                }
-                                                ?>">
-                                                <?= htmlspecialchars($row['egg_type']) ?>
-                                            </span>
+                                        <td class="px-5 py-4 space-y-1">
+                                            <?php foreach($row['items'] as $item): ?>
+                                                <div class="flex items-center space-x-2">
+                                                    <span class="px-2.5 py-1 rounded-full text-[11px] font-bold tracking-wide shadow-sm
+                                                        <?php
+                                                        switch($item['egg_type']) {
+                                                            case 'Extra Small':
+                                                            case 'Small': 
+                                                                echo 'bg-gray-100 text-gray-700 border border-gray-200'; break;
+                                                            case 'Medium': 
+                                                                echo 'bg-yellow-100 text-yellow-800 border border-yellow-200'; break;
+                                                            case 'Large': 
+                                                                echo 'bg-orange-100 text-orange-800 border border-orange-200'; break;
+                                                            case 'Extra Large':
+                                                            case 'Jumbo':
+                                                            case 'Super Jumbo':
+                                                            case 'Double Yolk': 
+                                                                echo 'bg-red-100 text-red-800 border border-red-200'; break;
+                                                            default:
+                                                                echo 'bg-slate-100 text-slate-700';
+                                                        }
+                                                        ?>">
+                                                        <?= htmlspecialchars($item['egg_type']) ?>
+                                                    </span>
+                                                    <span class="text-xs font-bold text-gray-500">x<?= $item['quantity'] ?></span>
+                                                </div>
+                                            <?php endforeach; ?>
                                         </td>
 
                                         <td class="px-5 py-4 font-bold text-gray-700 text-center">
-                                            <?= htmlspecialchars($row['quantity']) ?>
+                                            <?= $total_qty ?>
                                         </td>
 
                                         <td class="px-5 py-4">
@@ -385,17 +453,15 @@ $result = $stmt->get_result();
 
                                         <td class="px-5 py-4 text-center flex justify-center space-x-2">
                                              <button onclick="printReceipt(<?= $receipt_json ?>)" class="bg-emerald-500 hover:bg-emerald-600 text-white font-semibold text-xs py-1.5 px-3 rounded shadow transition">
-                                             <i class="fa-solid fa-print"></i>
+                                                 <i class="fa-solid fa-print"></i>
                                             </button>
-    
-                                        <!-- Trigger Button -->
-                                            <button onclick="openCancelModal(<?= $row['id'] ?>)" class="bg-red-500 hover:bg-red-600 text-white font-semibold text-xs py-1.5 px-3 rounded shadow transition">
-                                            <i class="fa-solid fa-trash"></i>
+                                            <button onclick="openCancelModal('<?= $ids_list ?>')" class="bg-red-500 hover:bg-red-600 text-white font-semibold text-xs py-1.5 px-3 rounded shadow transition">
+                                                 <i class="fa-solid fa-trash"></i>
                                             </button>
                                         </td>
 
                                     </tr>
-                                <?php endwhile; ?>
+                                <?php endforeach; ?>
                             <?php else: ?>
                                 <tr>
                                     <td colspan="9" class="px-5 py-12 text-center text-gray-400 font-medium bg-slate-50/50">
@@ -409,6 +475,12 @@ $result = $stmt->get_result();
                         </table>
                     </div>
 
+                    <div class="px-6 py-3.5 bg-slate-50 border-t border-gray-100 flex items-center justify-between text-xs text-gray-400 font-medium">
+                        <div>
+                            Showing entries <span class="text-gray-600 font-semibold"><?= $offset + 1 ?></span> to <span class="text-gray-600 font-semibold"><?= min($offset + $limit, $total_records) ?></span> of <span class="text-gray-600 font-semibold"><?= $total_records ?></span> total records.
+                        </div>
+                    </div>
+
                 </div>
 
             </div>
@@ -417,8 +489,43 @@ $result = $stmt->get_result();
     </div>
 
     <div id="receipt-print-window" class="hidden"></div>
+    <!-- Interactive Logout Confirmation Modal -->
+<div id="logout_modal" class="hidden fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center z-[100] p-4">
+    <div class="bg-white rounded-xl shadow-2xl border border-gray-100 max-w-sm w-full p-6 space-y-4 transform transition-all">
+        <div class="flex items-center space-x-3 text-red-500">
+            <div class="w-10 h-10 bg-red-100 rounded-full flex items-center justify-center text-red-600">
+                <i class="fa-solid fa-right-from-bracket text-base"></i>
+            </div>
+            <h3 class="text-lg font-bold text-slate-800">Confirm Logout</h3>
+        </div>
+        <p class="text-sm text-gray-500">Are you sure you want to end your session? You will need to log back in to manage reservations.</p>
+        <div class="flex justify-end space-x-3 pt-2">
+            <button type="button" onclick="closeLogoutModal()" class="bg-gray-100 hover:bg-gray-200 text-gray-700 px-4 py-2 rounded-lg text-sm font-semibold transition">
+                Stay Logged In
+            </button>
+            <a href="logout.php" class="bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-lg text-sm font-semibold text-center transition">
+                Yes, Logout
+            </a>
+        </div>
+    </div>
+</div>
 
     <script>
+        function openLogoutModal() {
+    document.getElementById('logout_modal').classList.remove('hidden');
+}
+
+function closeLogoutModal() {
+    document.getElementById('logout_modal').classList.add('hidden');
+}
+
+// Optional: Close the modal if the user clicks anywhere outside of the white modal container box
+window.addEventListener('click', function(event) {
+    const logoutModal = document.getElementById('logout_modal');
+    if (event.target === logoutModal) {
+        closeLogoutModal();
+    }
+});
     function printReceipt(data) {
         const printWindow = document.getElementById('receipt-print-window');
         
@@ -427,8 +534,20 @@ $result = $stmt->get_result();
             'Extra Large': 235, 'Jumbo': 255, 'Super Jumbo': 270, 'Double Yolk': 320 
         };
         
-        const unitPrice = unitPrices[data.egg_type] || 0;
-        const computedPrice = unitPrice * parseInt(data.quantity);
+        let itemsHTML = '';
+        data.items.forEach(item => {
+            const unitPrice = unitPrices[item.egg_type] || 0;
+            const computedPrice = unitPrice * parseInt(item.quantity);
+            
+            itemsHTML += `
+                <tr style="border-bottom: 1px solid #e2e8f0;">
+                    <td style="padding: 12px; font-weight: 600;">🥚 ${item.egg_type} Size</td>
+                    <td style="padding: 12px; text-align: center; color: #64748b !important;">₱${unitPrice.toFixed(2)}</td>
+                    <td style="padding: 12px; text-align: center; font-weight: 700;">x ${item.quantity}</td>
+                    <td style="padding: 12px; text-align: right; font-weight: 700;">₱${computedPrice.toLocaleString(undefined, {minimumFractionDigits: 2})}</td>
+                </tr>
+            `;
+        });
 
         printWindow.innerHTML = `
             <div style="font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 750px; height: calc(100vh - 60px); margin: 0 auto; padding: 30px; border: 1px solid #e2e8f0; background-color: #ffffff !important; display: flex; flex-direction: column; justify-content: space-between; box-sizing: border-box; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important;">
@@ -438,7 +557,7 @@ $result = $stmt->get_result();
                         <div style="display: flex; align-items: center; gap: 14px;">
                             <img src="vdvc.png" alt="VDVC Logo" style="width: 55px; height: 55px; object-fit: contain;">
                             <div>
-                                <h2 style="margin: 0; font-size: 21px; font-weight: 800; color: #1e293b !important; text-transform: uppercase; tracking-wide;">VDVC Egg Farm</h2>
+                                <h2 style="margin: 0; font-size: 21px; font-weight: 800; color: #1e293b !important; text-transform: uppercase;">VDVC Egg Farm</h2>
                                 <span style="font-size: 11px; background-color: #e0f2fe !important; color: #0369a1 !important; padding: 2px 8px; border-radius: 9999px; font-weight: 600; text-transform: uppercase;">Reservation Receipt</span>
                             </div>
                         </div>
@@ -475,12 +594,7 @@ $result = $stmt->get_result();
                         </h3>
                         <table style="width: 100%; font-size: 13px; border-collapse: collapse; border: 1px solid #e2e8f0; border-radius: 8px; overflow: hidden;">
                             <tbody style="color: #334155 !important;">
-                                <tr style="border-bottom: 1px solid #e2e8f0;">
-                                    <td style="padding: 12px; font-weight: 600;">🥚 ${data.egg_type} Size</td>
-                                    <td style="padding: 12px; text-align: center; color: #64748b !important;">₱${unitPrice.toFixed(2)}</td>
-                                    <td style="padding: 12px; text-align: center; font-weight: 700;">x ${data.quantity}</td>
-                                    <td style="padding: 12px; text-align: right; font-weight: 700;">₱${computedPrice.toLocaleString(undefined, {minimumFractionDigits: 2})}</td>
-                                </tr>
+                                ${itemsHTML}
                                 <tr style="background-color: #f8fafc !important; font-size: 14px; font-weight: 800;">
                                     <td colspan="3" style="padding: 12px; text-align: right; text-transform: uppercase;">Total Price Amount:</td>
                                     <td style="padding: 12px; text-align: right; color: #2563eb !important; font-size: 17px;">₱${parseFloat(data.total_price).toLocaleString(undefined, {minimumFractionDigits: 2})}</td>
@@ -500,7 +614,7 @@ $result = $stmt->get_result();
         window.print();
     }
     </script>
-    <!-- Cancel Modal -->
+
 <div id="cancelModal" class="fixed inset-0 bg-black/50 hidden flex items-center justify-center z-50">
     <div class="bg-white p-6 rounded-xl shadow-2xl max-w-sm w-full mx-4">
         <h3 class="text-lg font-bold text-gray-800 mb-2">Confirm Cancellation</h3>
@@ -516,8 +630,8 @@ $result = $stmt->get_result();
 </div>
 
 <script>
-function openCancelModal(id) {
-    document.getElementById('cancelId').value = id;
+function openCancelModal(idString) {
+    document.getElementById('cancelId').value = idString;
     document.getElementById('cancelModal').classList.remove('hidden');
 }
 
@@ -526,23 +640,20 @@ function closeCancelModal() {
 }
 
 function toggleNotifications(event) {
-            event.stopPropagation();
-            const dropdown = document.getElementById('notification_dropdown');
-            dropdown.classList.toggle('hidden');
-            
-            if(!dropdown.classList.contains('hidden')) {
-                const badge = document.getElementById('bell_badge');
-                if(badge) badge.classList.add('hidden');
-                const unreadCount = document.getElementById('unread_count');
-                if(unreadCount) {
-                    unreadCount.innerText = "0 New";
-                    unreadCount.className = "text-xs bg-gray-100 text-gray-400 px-2 py-0.5 rounded-full font-medium";
-                }
-            }
+    event.stopPropagation();
+    const dropdown = document.getElementById('notification_dropdown');
+    dropdown.classList.toggle('hidden');
+    
+    if(!dropdown.classList.contains('hidden')) {
+        const badge = document.getElementById('bell_badge');
+        if(badge) badge.classList.add('hidden');
+        const unreadCount = document.getElementById('unread_count');
+        if(unreadCount) {
+            unreadCount.innerText = "0 New";
+            unreadCount.className = "text-xs bg-gray-100 text-gray-400 px-2 py-0.5 rounded-full font-medium";
         }
+    }
+}
 </script>
 </body>
 </html>
-<?php 
-$stmt->close(); 
-?>

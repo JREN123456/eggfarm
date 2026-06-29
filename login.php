@@ -1,4 +1,15 @@
-<?php session_start(); ?>
+<?php 
+session_start(); 
+
+// Check if the "Remember me" cookie exists
+$remembered_username = "";
+$remember_checked = "";
+
+if (isset($_COOKIE['remember_user'])) {
+    $remembered_username = htmlspecialchars($_COOKIE['remember_user']);
+    $remember_checked = "checked";
+}
+?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -73,18 +84,35 @@
             margin-bottom: 16px;
         }
 
-        .form-group i {
+        .form-group > i:not(.toggle-password) {
             position: absolute;
             left: 15px;
             top: 50%;
             transform: translateY(-50%);
             color: #8fa0a6;
             font-size: 16px;
+            pointer-events: none;
+        }
+
+        .toggle-password {
+            position: absolute;
+            right: 15px;
+            top: 50%;
+            transform: translateY(-50%);
+            color: #8fa0a6;
+            font-size: 16px;
+            cursor: pointer;
+            transition: color 0.2s ease;
+            z-index: 2;
+        }
+
+        .toggle-password:hover {
+            color: #1e4473;
         }
 
         .form-control {
             width: 100%;
-            padding: 12px 15px 12px 45px;
+            padding: 12px 40px 12px 45px;
             border: 1.5px solid #d0dfeb;
             border-radius: 10px;
             font-size: 14px;
@@ -179,7 +207,6 @@
         <h1 class="system-title">Egg Farm<br>Management System</h1>
     </div>
 
-    <!-- Check for session errors dynamically and display them -->
     <?php if (isset($_SESSION['login_error'])): ?>
         <div class="alert-danger">
             <i class="fa-solid fa-triangle-exclamation"></i> <?php echo $_SESSION['login_error']; unset($_SESSION['login_error']); ?>
@@ -194,6 +221,7 @@
                    name="username" 
                    class="form-control" 
                    placeholder="Username" 
+                   value="<?php echo $remembered_username; ?>"
                    required>
         </div>
 
@@ -201,14 +229,16 @@
             <i class="fa-solid fa-lock"></i>
             <input type="password" 
                    name="password" 
+                   id="password"
                    class="form-control" 
                    placeholder="Password" 
                    required>
+            <i class="fa-regular fa-eye toggle-password" id="togglePassword"></i>
         </div>
 
         <div class="form-utilities">
             <label class="remember-me">
-                <input type="checkbox" name="remember"> Remember me
+                <input type="checkbox" name="remember" <?php echo $remember_checked; ?>> Remember me
             </label>
             <a href="#" class="forgot-link">Forgot Password?</a>
         </div>
@@ -222,6 +252,18 @@
     </div>
 
 </div>
+
+<script>
+    const togglePassword = document.querySelector('#togglePassword');
+    const passwordInput = document.querySelector('#password');
+
+    togglePassword.addEventListener('click', function () {
+        const type = passwordInput.getAttribute('type') === 'password' ? 'text' : 'password';
+        passwordInput.setAttribute('type', type);
+        this.classList.toggle('fa-eye');
+        this.classList.toggle('fa-eye-slash');
+    });
+</script>
 
 </body>
 </html>

@@ -21,15 +21,17 @@ $success_msg = "";
 $error_msg = "";
 
 // --- 1. FETCH CURRENT USER INFORMATION TO POPULATE THE FORM ---
-$query = "SELECT fullname, username, email FROM users WHERE id = ? LIMIT 1";
+// Note: Added profile_photo to the database query selection
+$query = "SELECT fullname, username, email, profile_photo FROM users WHERE id = ? LIMIT 1";
 if ($stmt = mysqli_prepare($conn, $query)) {
     mysqli_stmt_bind_param($stmt, "i", $user_id);
     mysqli_stmt_execute($stmt);
     $result = mysqli_stmt_get_result($stmt);
     if ($user = mysqli_fetch_assoc($result)) {
-        $db_fullname = $user['fullname'];
-        $db_username = $user['username'];
-        $db_email    = $user['email'];
+        $db_fullname      = $user['fullname'];
+        $db_username      = $user['username'];
+        $db_email         = $user['email'];
+        $db_profile_photo = $user['profile_photo']; // Stored image name
         
         // Split fullname back into First and Last name structures for the UI
         $name_parts = explode(" ", $db_fullname, 2);
@@ -61,64 +63,103 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['save_profile_changes']
         $error_msg = "First Name, Username, and Email are required.";
     } else {
         
-        // Process Profile text updates first
-        $update_sql = "UPDATE users SET fullname = ?, username = ?, email = ? WHERE id = ?";
-        if ($update_stmt = mysqli_prepare($conn, $update_sql)) {
-            mysqli_stmt_bind_param($update_stmt, "sssi", $new_fullname, $username_input, $email_input, $user_id);
+        $photo_updated = false;
+        $new_photo_filename = $db_profile_photo; // Default back to current photo
+
+        // --- HANDLE PHOTO UPLOAD ENGINE ---
+        if (isset($_FILES['profile_photo']) && $_FILES['profile_photo']['error'] === UPLOAD_ERR_OK) {
+            $file_tmp_path = $_FILES['profile_photo']['tmp_name'];
+            $file_name = $_FILES['profile_photo']['name'];
+            $file_size = $_FILES['profile_photo']['size'];
             
-            if (mysqli_stmt_execute($update_stmt)) {
-                $success_msg = "Profile changes saved successfully!";
-                
-                // Refresh local variables for rendering consistency
-                $first_name  = $first_name_input;
-                $last_name   = $last_name_input;
-                $db_username = $username_input;
-                $db_email    = $email_input;
-                
-                // --- OPTIONAL PASSWORD UPDATE LOGIC ---
-                // Only process password changes if the user typed inside the password fields
-                if (!empty($current_pass) || !empty($new_pass) || !empty($confirm_pass)) {
-                    if (empty($current_pass) || empty($new_pass) || empty($confirm_pass)) {
-                        $error_msg = "Profile updated, but password fields must all be completed to change password.";
-                    } elseif ($new_pass !== $confirm_pass) {
-                        $error_msg = "Profile updated, but new passwords do not match.";
-                    } elseif (strlen($new_pass) < 8) {
-                        $error_msg = "Profile updated, but new password must be at least 8 characters long.";
-                    } else {
-                        // Verify current password hash matches
-                        $pass_sql = "SELECT password FROM users WHERE id = ? LIMIT 1";
-                        if ($pass_stmt = mysqli_prepare($conn, $pass_sql)) {
-                            mysqli_stmt_bind_param($pass_stmt, "i", $user_id);
-                            mysqli_stmt_execute($pass_stmt);
-                            $pass_result = mysqli_stmt_get_result($pass_stmt);
-                            
-                            if ($pass_row = mysqli_fetch_assoc($pass_result)) {
-                                if (password_verify($current_pass, $pass_row['password'])) {
-                                    // Securely hash the new entry
-                                    $new_hashed_password = password_hash($new_pass, PASSWORD_DEFAULT);
-                                    
-                                    $change_sql = "UPDATE users SET password = ? WHERE id = ?";
-                                    if ($change_stmt = mysqli_prepare($conn, $change_sql)) {
-                                        mysqli_stmt_bind_param($change_stmt, "si", $new_hashed_password, $user_id);
-                                        if (mysqli_stmt_execute($change_stmt)) {
-                                            $success_msg = "Profile and password updated successfully!";
-                                        } else {
-                                            $error_msg = "Profile updated, but failed to change database password entry.";
-                                        }
-                                        mysqli_stmt_close($change_stmt);
-                                    }
-                                } else {
-                                    $error_msg = "Profile updated, but current password input was incorrect.";
-                                }
-                            }
-                            mysqli_stmt_close($pass_stmt);
-                        }
+            $file_ext = strtolower(pathinfo($file_name, PATHINFO_EXTENSION));
+            $allowed_extensions = ['jpg', 'jpeg', 'png', 'gif'];
+            
+            if (in_array($file_ext, $allowed_extensions)) {
+                if ($file_size < 5000000) { // Limit file size to 5MB
+                    $upload_dir = 'uploads/';
+                    
+                    // Create the directory if it does not exist yet
+                    if (!is_dir($upload_dir)) {
+                        mkdir($upload_dir, 0755, true);
                     }
+                    
+                    // Generate a distinct unique filename to avoid overwrites
+                    $new_photo_filename = "user_" . $user_id . "_" . time() . "." . $file_ext;
+                    $dest_path = $upload_dir . $new_photo_filename;
+                    
+                    if (move_uploaded_file($file_tmp_path, $dest_path)) {
+                        $photo_updated = true;
+                    } else {
+                        $error_msg = "Error moving the uploaded profile picture to destination folder.";
+                    }
+                } else {
+                    $error_msg = "Uploaded profile image size is too large. Maximum size allowed is 5MB.";
                 }
             } else {
-                $error_msg = "Failed to update profile details. Check if the Username/Email is taken.";
+                $error_msg = "Invalid file type extension. Allowed extensions: JPG, JPEG, PNG, GIF.";
             }
-            mysqli_stmt_close($update_stmt);
+        }
+
+        // Proceed if no errors were thrown during file validation
+        if (empty($error_msg)) {
+            // Profile updates including profile_photo column mapping
+            $update_sql = "UPDATE users SET fullname = ?, username = ?, email = ?, profile_photo = ? WHERE id = ?";
+            if ($update_stmt = mysqli_prepare($conn, $update_sql)) {
+                mysqli_stmt_bind_param($update_stmt, "ssssi", $new_fullname, $username_input, $email_input, $new_photo_filename, $user_id);
+                
+                if (mysqli_stmt_execute($update_stmt)) {
+                    $success_msg = "Profile changes saved successfully!";
+                    
+                    // Refresh local variables for rendering consistency
+                    $first_name       = $first_name_input;
+                    $last_name        = $last_name_input;
+                    $db_username      = $username_input;
+                    $db_email         = $email_input;
+                    $db_profile_photo = $new_photo_filename;
+                    
+                    // --- OPTIONAL PASSWORD UPDATE LOGIC ---
+                    if (!empty($current_pass) || !empty($new_pass) || !empty($confirm_pass)) {
+                        if (empty($current_pass) || empty($new_pass) || empty($confirm_pass)) {
+                            $error_msg = "Profile updated, but password fields must all be completed to change password.";
+                        } elseif ($new_pass !== $confirm_pass) {
+                            $error_msg = "Profile updated, but new passwords do not match.";
+                        } elseif (strlen($new_pass) < 8) {
+                            $error_msg = "Profile updated, but new password must be at least 8 characters long.";
+                        } else {
+                            $pass_sql = "SELECT password FROM users WHERE id = ? LIMIT 1";
+                            if ($pass_stmt = mysqli_prepare($conn, $pass_sql)) {
+                                mysqli_stmt_bind_param($pass_stmt, "i", $user_id);
+                                mysqli_stmt_execute($pass_stmt);
+                                $pass_result = mysqli_stmt_get_result($pass_stmt);
+                                
+                                if ($pass_row = mysqli_fetch_assoc($pass_result)) {
+                                    if (password_verify($current_pass, $pass_row['password'])) {
+                                        $new_hashed_password = password_hash($new_pass, PASSWORD_DEFAULT);
+                                        
+                                        $change_sql = "UPDATE users SET password = ? WHERE id = ?";
+                                        if ($change_stmt = mysqli_prepare($conn, $change_sql)) {
+                                            mysqli_stmt_bind_param($change_stmt, "si", $new_hashed_password, $user_id);
+                                            if (mysqli_stmt_execute($change_stmt)) {
+                                                $success_msg = "Profile and password updated successfully!";
+                                            } else {
+                                                $error_msg = "Profile updated, but failed to change database password entry.";
+                                            }
+                                            mysqli_stmt_close($change_stmt);
+                                        }
+                                    } else {
+                                        $error_msg = "Profile updated, but current password input was incorrect.";
+                                    }
+                                }
+                                mysqli_stmt_close($pass_stmt);
+                            }
+                        }
+                    }
+                } else {
+                    $error_msg = "Failed to update profile details. Check if the Username/Email is taken.";
+                }
+                mysqli_stmt_close($update_stmt);
+            }
         }
     }
 }
@@ -165,10 +206,11 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['save_profile_changes']
                 </a>
                 
                 <hr class="border-sky-400/30 my-2">
-                <a href="logout.php" class="flex items-center space-x-3 px-4 py-3 rounded-xl hover:bg-red-600/80 transition font-medium text-sky-100 hover:text-white">
-                    <i class="fa-solid fa-right-from-bracket w-5"></i>
-                    <span>Logout</span>
-                </a>
+                <!-- Locate this inside your <nav> tag and replace it with this: -->
+<a href="javascript:void(0);" onclick="openLogoutModal()" class="flex items-center space-x-3 px-4 py-3 rounded-xl hover:bg-red-600/80 transition font-medium text-sky-100 hover:text-white">
+    <i class="fa-solid fa-right-from-bracket w-5"></i>
+    <span>Logout</span>
+</a>
             </nav>
             
             <div class="p-4 text-center text-xs text-sky-200 border-t border-sky-400/30">
@@ -201,9 +243,16 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['save_profile_changes']
                         <p class="text-xs text-gray-500 mb-4 font-semibold">Account Identity & Contact Information</p>
                     </div>
 
+                    <!-- Profile Photo Rendering Engine Block -->
                     <div class="flex items-center space-x-4 mb-2">
-                        <div class="w-20 h-20 rounded-full overflow-hidden border border-gray-300 relative group">
-                            <img id="avatarPreview" src="https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&q=80&w=150" alt="Profile Photo" class="w-full h-full object-cover">
+                        <div class="w-20 h-20 rounded-full overflow-hidden border border-gray-300 relative group bg-gray-100">
+                            <?php 
+                                // Set path or default fallback if no image is stored
+                                $avatar_src = (!empty($db_profile_photo) && file_exists("uploads/" . $db_profile_photo)) 
+                                    ? "uploads/" . htmlspecialchars($db_profile_photo) 
+                                    : "https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&q=80&w=150";
+                            ?>
+                            <img id="avatarPreview" src="<?= $avatar_src ?>" alt="Profile Photo" class="w-full h-full object-cover">
                         </div>
                         <label class="cursor-pointer bg-blue-600 hover:bg-blue-700 text-white font-medium py-1.5 px-4 rounded text-sm transition">
                             Edit Photo
@@ -295,8 +344,44 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['save_profile_changes']
             
         </div>
     </div>
+    <!-- Interactive Logout Confirmation Modal -->
+<div id="logout_modal" class="hidden fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center z-[100] p-4">
+    <div class="bg-white rounded-xl shadow-2xl border border-gray-100 max-w-sm w-full p-6 space-y-4 transform transition-all">
+        <div class="flex items-center space-x-3 text-red-500">
+            <div class="w-10 h-10 bg-red-100 rounded-full flex items-center justify-center text-red-600">
+                <i class="fa-solid fa-right-from-bracket text-base"></i>
+            </div>
+            <h3 class="text-lg font-bold text-slate-800">Confirm Logout</h3>
+        </div>
+        <p class="text-sm text-gray-500">Are you sure you want to end your session? You will need to log back in to manage reservations.</p>
+        <div class="flex justify-end space-x-3 pt-2">
+            <button type="button" onclick="closeLogoutModal()" class="bg-gray-100 hover:bg-gray-200 text-gray-700 px-4 py-2 rounded-lg text-sm font-semibold transition">
+                Stay Logged In
+            </button>
+            <a href="logout.php" class="bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-lg text-sm font-semibold text-center transition">
+                Yes, Logout
+            </a>
+        </div>
+    </div>
+</div>
 
     <script>
+        function openLogoutModal() {
+    document.getElementById('logout_modal').classList.remove('hidden');
+}
+
+function closeLogoutModal() {
+    document.getElementById('logout_modal').classList.add('hidden');
+}
+
+// Optional: Close the modal if the user clicks anywhere outside of the white modal container box
+window.addEventListener('click', function(event) {
+    const logoutModal = document.getElementById('logout_modal');
+    if (event.target === logoutModal) {
+        closeLogoutModal();
+    }
+});
+
         document.addEventListener('DOMContentLoaded', () => {
             // Password Visibility Toggle Logic
             const toggleButtons = document.querySelectorAll('.toggle-password');
@@ -360,5 +445,3 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['save_profile_changes']
     </script>
 </body>
 </html>
-
-📋 My Reservation History

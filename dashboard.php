@@ -17,51 +17,54 @@ $user_id = $_SESSION['user_id'];
 $customer_name = $_SESSION['fullname'] ?? 'Guest';
 $user_role = $_SESSION['role'] ?? 'Customer';
 
-// --- DATABASE METRICS AGGREGATION (ACCOUNT SEPARATE PROGRESS) ---
+// --- DATABASE METRICS AGGREGATION & GROUPING LOGIC (SYNCHRONIZED WITH VIEW.PHP) ---
 
-// 1. Fetch Total Reservations specific to this client account
-$total_reservations = 0;
-$res_stmt = $conn->prepare("SELECT COUNT(*) as total FROM reservations WHERE user_id = ?");
-$res_stmt->bind_param("i", $user_id);
-if ($res_stmt->execute()) {
-    $res_count_query = $res_stmt->get_result();
-    $row = $res_count_query->fetch_assoc();
-    $total_reservations = $row['total'] ?? 0;
-}
-$res_stmt->close();
-
-// 2. Fetch Total Trays Reserved specific to this client account
-$total_trays = 0;
-$trays_stmt = $conn->prepare("SELECT SUM(quantity) as total_qty FROM reservations WHERE user_id = ?");
-$trays_stmt->bind_param("i", $user_id);
-if ($trays_stmt->execute()) {
-    $trays_query = $trays_stmt->get_result();
-    $row = $trays_query->fetch_assoc();
-    $total_trays = (int)($row['total_qty'] ?? 0);
-}
-$trays_stmt->close();
-
-// 3. Fetch Total Spent / Revenue Accumulated specific to this client account
-$total_spent = 0;
-$revenue_stmt = $conn->prepare("SELECT SUM(total_price) as total_rev FROM reservations WHERE user_id = ?");
-$revenue_stmt->bind_param("i", $user_id);
-if ($revenue_stmt->execute()) {
-    $revenue_query = $revenue_stmt->get_result();
-    $row = $revenue_query->fetch_assoc();
-    $total_spent = (float)($row['total_rev'] ?? 0);
-}
-$revenue_stmt->close();
-
-// 4. Fetch Recent Activity Logs specific to this client account (Limit to last 5 transactions)
-$recent_activities = [];
-$activity_stmt = $conn->prepare("SELECT id, egg_type, quantity, total_price, reservation_date, delivery_method FROM reservations WHERE user_id = ? ORDER BY id DESC LIMIT 5");
-$activity_stmt->bind_param("i", $user_id);
-if ($activity_stmt->execute()) {
-    $activity_query = $activity_stmt->get_result();
-    while ($row = $activity_query->fetch_assoc()) {
-        $recent_activities[] = $row;
+// Pull all account-specific reservations to replicate grouping architecture accurately
+$all_reservations = [];
+$query_stmt = $conn->prepare("SELECT * FROM reservations WHERE user_id = ? ORDER BY id DESC");
+$query_stmt->bind_param("i", $user_id);
+if ($query_stmt->execute()) {
+    $res_query = $query_stmt->get_result();
+    while ($row = $res_query->fetch_assoc()) {
+        $all_reservations[] = $row;
     }
 }
+$query_stmt->close();
+
+// Process grouping structure matching view.php parameters exactly
+$grouped_reservations = [];
+$total_trays = 0;
+$total_spent = 0;
+
+foreach ($all_reservations as $row) {
+    $timestamp_key = isset($row['created_at']) ? $row['created_at'] : $row['reservation_date'];
+    $group_key = $row['customer_name'] . '_' . $row['contact_number'] . '_' . $timestamp_key . '_' . $row['delivery_method'];
+    
+    if (!isset($grouped_reservations[$group_key])) {
+        $grouped_reservations[$group_key] = [
+            'id' => $row['id'],
+            'egg_type' => $row['egg_type'], // Fallback structural indicator
+            'reservation_date' => $row['reservation_date'],
+            'delivery_method' => $row['delivery_method'],
+            'total_price' => 0, 
+            'items' => []
+        ];
+    }
+
+    $grouped_reservations[$group_key]['items'][] = [
+        'egg_type' => $row['egg_type'],
+        'quantity' => (int)$row['quantity'],
+        'total_price' => (float)$row['total_price']
+    ];
+    
+    $grouped_reservations[$group_key]['total_price'] += (float)$row['total_price'];
+    $total_trays += (int)$row['quantity'];
+    $total_spent += (float)$row['total_price'];
+}
+
+// Complete assignments reflecting grouped statistics
+$total_reservations = count($grouped_reservations);
+$recent_activities = array_slice($grouped_reservations, 0, 5); // Limit dashboard recent items list to top 5 bundles
 
 // Fetch all persistent historical user notifications to render inside dropdown
 $notifications = [];
@@ -72,8 +75,29 @@ $result = $notif_stmt->get_result();
 while ($row = $result->fetch_assoc()) {
     $notifications[] = $row;
 }
+$notif_stmt->close();
 
-$activity_stmt->close();
+$unread_count = 0;
+foreach ($notifications as $n) {
+    if (!$n['is_read']) $unread_count++;
+}
+
+// Fetch Profile Picture Filename for Top Header Right Panel
+$db_profile_photo = "";
+$photo_stmt = $conn->prepare("SELECT profile_photo FROM users WHERE id = ? LIMIT 1");
+$photo_stmt->bind_param("i", $user_id);
+if ($photo_stmt->execute()) {
+    $photo_res = $photo_stmt->get_result();
+    if ($user_row = $photo_res->fetch_assoc()) {
+        $db_profile_photo = $user_row['profile_photo'] ?? '';
+    }
+}
+$photo_stmt->close();
+
+// Determine dynamic avatar source path for the user header
+$avatar_src = (!empty($db_profile_photo) && file_exists("uploads/" . $db_profile_photo)) 
+    ? "uploads/" . htmlspecialchars($db_profile_photo) 
+    : "https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&q=80&w=150";
 ?>
 
 <!DOCTYPE html>
@@ -118,7 +142,7 @@ $activity_stmt->close();
                 </a>
                 
                 <hr class="border-sky-400/30 my-2">
-                <a href="logout.php" class="flex items-center space-x-3 px-4 py-3 rounded-xl hover:bg-red-600/80 transition font-medium text-sky-100 hover:text-white">
+                <a href="javascript:void(0);" onclick="openLogoutModal()" class="flex items-center space-x-3 px-4 py-3 rounded-xl hover:bg-red-600/80 transition font-medium text-sky-100 hover:text-white">
                     <i class="fa-solid fa-right-from-bracket w-5"></i>
                     <span>Logout</span>
                 </a>
@@ -131,7 +155,7 @@ $activity_stmt->close();
 
         <div class="flex-1 flex flex-col min-w-0">
 
-        <header class="bg-white border-b border-gray-200 px-8 py-4 flex justify-between items-center relative">
+            <header class="bg-white border-b border-gray-200 px-8 py-4 flex justify-between items-center relative">
                 <h1 class="text-2xl font-bold text-slate-800">📊 Dashboard</h1>
                 <div class="flex items-center space-x-4">
                     <div class="text-right">
@@ -139,7 +163,7 @@ $activity_stmt->close();
                         <div class="text-xs text-gray-400">(Customer Access)</div>
                     </div>
                     <div class="w-10 h-10 rounded-full bg-purple-200 overflow-hidden border border-gray-300">
-                        <img src="https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&q=80&w=150" alt="Profile">
+                        <img src="<?= $avatar_src ?>" alt="Profile" class="w-full h-full object-cover">
                     </div>
                     
                     <div class="relative">
@@ -261,13 +285,22 @@ $activity_stmt->close();
                                 </thead>
                                 <tbody class="divide-y divide-gray-100 text-gray-600">
                                     <?php if (!empty($recent_activities)): ?>
-                                        <?php foreach ($recent_activities as $activity): ?>
+                                        <?php foreach ($recent_activities as $activity): 
+                                            $is_bundle = count($activity['items']) > 1;
+                                            $total_item_qty = array_sum(array_column($activity['items'], 'quantity'));
+                                        ?>
                                             <tr class="hover:bg-slate-50/80 transition">
                                                 <td class="py-3.5 px-4 font-medium text-slate-800">
                                                     <div class="flex items-center space-x-2">
                                                         <span class="w-2 h-2 rounded-full bg-blue-500"></span>
-                                                        <span><?php echo htmlspecialchars($activity['egg_type']); ?></span>
-                                                        <span class="text-xs text-gray-400">(x<?php echo (int)$activity['quantity']; ?>)</span>
+                                                        <span>
+                                                            <?php if ($is_bundle): ?>
+                                                                <span class="font-bold text-amber-600 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded text-xs">Bundle</span>
+                                                            <?php else: ?>
+                                                                <?php echo htmlspecialchars($activity['items'][0]['egg_type']); ?>
+                                                            <?php endif; ?>
+                                                        </span>
+                                                        <span class="text-xs text-gray-400">(x<?php echo $total_item_qty; ?>)</span>
                                                     </div>
                                                 </td>
                                                 <td class="py-3.5 px-4 text-xs"><?php echo htmlspecialchars($activity['reservation_date']); ?></td>
@@ -337,21 +370,59 @@ $activity_stmt->close();
             
         </div>
     </div>
-    <script> function toggleNotifications(event) {
-            event.stopPropagation();
-            const dropdown = document.getElementById('notification_dropdown');
-            dropdown.classList.toggle('hidden');
-            
-            if(!dropdown.classList.contains('hidden')) {
-                const badge = document.getElementById('bell_badge');
-                if(badge) badge.classList.add('hidden');
-                const unreadCount = document.getElementById('unread_count');
-                if(unreadCount) {
-                    unreadCount.innerText = "0 New";
-                    unreadCount.className = "text-xs bg-gray-100 text-gray-400 px-2 py-0.5 rounded-full font-medium";
-                }
+
+    <!-- Interactive Logout Confirmation Modal -->
+    <div id="logout_modal" class="hidden fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center z-[100] p-4">
+        <div class="bg-white rounded-xl shadow-2xl border border-gray-100 max-w-sm w-full p-6 space-y-4 transform transition-all">
+            <div class="flex items-center space-x-3 text-red-500">
+                <div class="w-10 h-10 bg-red-100 rounded-full flex items-center justify-center text-red-600">
+                    <i class="fa-solid fa-right-from-bracket text-base"></i>
+                </div>
+                <h3 class="text-lg font-bold text-slate-800">Confirm Logout</h3>
+            </div>
+            <p class="text-sm text-gray-500">Are you sure you want to end your session? You will need to log back in to manage reservations.</p>
+            <div class="flex justify-end space-x-3 pt-2">
+                <button type="button" onclick="closeLogoutModal()" class="bg-gray-100 hover:bg-gray-200 text-gray-700 px-4 py-2 rounded-lg text-sm font-semibold transition">
+                    Stay Logged In
+                </button>
+                <a href="logout.php" class="bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-lg text-sm font-semibold text-center transition">
+                    Yes, Logout
+                </a>
+            </div>
+        </div>
+    </div>
+
+    <script> 
+    function openLogoutModal() {
+        document.getElementById('logout_modal').classList.remove('hidden');
+    }
+
+    function closeLogoutModal() {
+        document.getElementById('logout_modal').classList.add('hidden');
+    }
+
+    window.addEventListener('click', function(event) {
+        const logoutModal = document.getElementById('logout_modal');
+        if (event.target === logoutModal) {
+            closeLogoutModal();
+        }
+    });
+    
+    function toggleNotifications(event) {
+        event.stopPropagation();
+        const dropdown = document.getElementById('notification_dropdown');
+        dropdown.classList.toggle('hidden');
+        
+        if(!dropdown.classList.contains('hidden')) {
+            const badge = document.getElementById('bell_badge');
+            if(badge) badge.classList.add('hidden');
+            const unreadCount = document.getElementById('unread_count');
+            if(unreadCount) {
+                unreadCount.innerText = "0 New";
+                unreadCount.className = "text-xs bg-gray-100 text-gray-400 px-2 py-0.5 rounded-full font-medium";
             }
         }
-        </script>
+    }
+    </script>
 </body>
 </html>

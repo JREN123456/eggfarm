@@ -27,6 +27,18 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
                 $_SESSION['username'] = $row['username']; 
                 $_SESSION['role'] = $row['role'];
 
+                // --- REMEMBER ME FUNCTIONALITY ---
+                if (isset($_POST['remember'])) {
+                    // Set cookie for 30 days (30 days * 24 hours * 60 mins * 60 secs)
+                    $cookie_expiration = time() + (30 * 24 * 60 * 60); 
+                    // Stores the username safely using HttpOnly flag to prevent XSS reading it
+                    setcookie('remember_user', $row['username'], $cookie_expiration, "/", "", false, true);
+                } else {
+                    // Unchecked: clear the cookie immediately by setting its expiration to the past
+                    setcookie('remember_user', '', time() - 3600, "/");
+                }
+                // ---------------------------------
+
                 // Role-based routing
                 if ($row['role'] == "owner") {
                     header("Location: owner_dashboard.php");
